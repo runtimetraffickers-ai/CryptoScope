@@ -8,11 +8,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, Mock
 
+from contextlib import closing
 from cryptoscope.config import CryptoScopeConfig
 from cryptoscope.extract.binance_client import BinanceClient
 from cryptoscope.load.database import DatabaseManager
 from dashboard.services.etl_bootstrap import ETLBootstrapManager, etl_process_lock
 from main import CryptoScopePipeline
+
 
 
 class ETLRecoveryTests(unittest.TestCase):
@@ -53,23 +55,34 @@ class ETLRecoveryTests(unittest.TestCase):
             self.assertEqual(new.call_count, 0)
             db = DatabaseManager()
             self.assertEqual(db.missing_symbols(), [])
-            with sqlite3.connect(self.dbfile) as conn:
+            with closing(sqlite3.connect(self.dbfile)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM fact_candles_1h").fetchone()[0], 15)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM etl_run_log WHERE status='SUCCESS'").fetchone()[0], 1)
 
             CryptoScopePipeline().run()
             self.assertEqual(fetch.call_count, len(CryptoScopeConfig.SYMBOLS))
             self.assertEqual(new.call_count, len(CryptoScopeConfig.SYMBOLS))
-            with sqlite3.connect(self.dbfile) as conn:
+            with closing(sqlite3.connect(self.dbfile)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM fact_candles_1h").fetchone()[0], 15)
 
     def test_empty_file_schema_and_missing_coins_detected(self):
         self.dbfile.parent.mkdir(parents=True)
-        self.dbfile.touch()  # exactly 0 bytes, as in the uploaded ZIP
+        self.dbfile.touch()
+
         self.assertEqual(self.dbfile.stat().st_size, 0)
-        self.assertEqual(DatabaseManager().missing_symbols(), CryptoScopeConfig.SYMBOLS)
-        with sqlite3.connect(self.dbfile) as conn:
-            names = {x[0] for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertEqual(
+            DatabaseManager().missing_symbols(),
+            CryptoScopeConfig.SYMBOLS
+        )
+
+        with closing(sqlite3.connect(self.dbfile)) as conn:
+            names = {
+                x[0]
+                for x in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+
         self.assertIn("fact_candles_1h", names)
 
     def test_dashboard_starts_pipeline_without_blocking(self):
